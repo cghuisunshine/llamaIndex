@@ -6,3 +6,6 @@ chroma_db/
 **/*.parquet
 **/*.hnsw
 
+
+.DS_Store
+
