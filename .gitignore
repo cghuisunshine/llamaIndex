@@ -1,5 +1,5 @@
 # RAG/Vector DB artifacts
-storage/
+storage/chroma_db
 chroma_db/
 **/*.sqlite*
 **/*.bin
