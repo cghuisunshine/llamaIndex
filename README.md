@@ -10,6 +10,7 @@ This project demonstrates how to use LlamaIndex to create, store, and query a ve
 *   `show_embedding.py`: This script loads an index from `./storage` and displays the embedding vector for a single node.
 *   `incremental_index.py`: Rebuilds the index (or inserts new files) using a persistent Chroma vector store.
 *   `chat_cli.py`: Starts an interactive CLI that chats over the stored index; it expects the Chroma-backed index created by `incremental_index.py`.
+*   `chat_web.py`: Serves a FastAPI-based web chat UI with per-user conversations backed by the stored index.
 
 ## How to Use
 
@@ -26,6 +27,14 @@ This project demonstrates how to use LlamaIndex to create, store, and query a ve
 4.  **Query the index:**
     *   Run `python query_storage.py` to query the index with a sample query. You can modify the query in the script.
     *   For a conversational interface, run `python chat_cli.py --show-sources`.
+    *   To launch the multi-user web chat UI, run:
+
+        ```bash
+        pip install fastapi uvicorn
+        python chat_web.py --host 0.0.0.0 --port 8000
+        ```
+
+        Then open `http://127.0.0.1:8000` (or the host/port you choose) in a browser. Each browser tab keeps its own session; use the "New conversation" button to start a fresh chat.
 
 ## Directory Structure
 
