@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -34,6 +36,7 @@ class ServerConfig:
 
     storage_dir: Path = Path("./storage")
     chroma_dir: Path = Path("./storage/chroma_db")
+    log_dir: Path = Path("./storage/chat_logs")
     llm_model: str = "gpt-4o-mini"
     embed_model: str = "text-embedding-3-small"
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
@@ -59,6 +62,7 @@ class SessionState:
     engine: ContextChatEngine
     history: List[ChatMessage] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    log_path: Optional[Path] = None
 
 
 class ChatRequest(BaseModel):
@@ -97,6 +101,24 @@ def create_app(config: ServerConfig) -> FastAPI:
     app.state.sessions: Dict[str, SessionState] = {}
     app.state.session_lock = asyncio.Lock()
     app.state.retriever = None
+    if config.log_dir:
+        config.log_dir.mkdir(parents=True, exist_ok=True)
+
+    def write_log_entry(log_path: Optional[Path], entry: Dict[str, Any]) -> None:
+        """Persist a single structured log entry to disk."""
+        if log_path is None:
+            return
+        payload = dict(entry)
+        payload.setdefault(
+            "timestamp", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(json.dumps(payload) + "\n")
+        except Exception:
+            # Logging should never interfere with serving the chat.
+            pass
 
     @app.on_event("startup")
     async def startup_event() -> None:
@@ -133,8 +155,13 @@ def create_app(config: ServerConfig) -> FastAPI:
             verbose=False,
         )
         session_id = uuid4().hex
-        session = SessionState(engine=engine)
+        log_path = config.log_dir / f"{session_id}.jsonl"
+        session = SessionState(engine=engine, log_path=log_path)
         app.state.sessions[session_id] = session
+        write_log_entry(
+            log_path,
+            {"event": "session_started", "session_id": session_id},
+        )
         return session_id, session
 
     async def get_or_create_session(
@@ -208,6 +235,15 @@ def create_app(config: ServerConfig) -> FastAPI:
                 response = await asyncio.to_thread(session.engine.chat, request.message)
             except Exception as exc:
                 session.history.pop()
+                write_log_entry(
+                    session.log_path,
+                    {
+                        "event": "chat_error",
+                        "session_id": session_id,
+                        "user_message": request.message,
+                        "error": str(exc),
+                    },
+                )
                 raise HTTPException(
                     status_code=500, detail="LLM request failed."
                 ) from exc
@@ -219,12 +255,26 @@ def create_app(config: ServerConfig) -> FastAPI:
             if request.include_sources:
                 source_nodes = getattr(response, "source_nodes", None) or []
                 sources = extract_sources(source_nodes, config.source_count)
+            serialized_history = [
+                {"role": msg.role, "content": msg.content} for msg in session.history
+            ]
+            write_log_entry(
+                session.log_path,
+                {
+                    "event": "chat_turn",
+                    "session_id": session_id,
+                    "user_message": request.message,
+                    "assistant_response": answer,
+                    "sources": [source.model_dump() for source in sources],
+                    "messages": serialized_history,
+                },
+            )
 
         return JSONResponse(
             ChatResponse(
                 session_id=session_id,
                 response=answer,
-                messages=[{"role": msg.role, "content": msg.content} for msg in session.history],
+                messages=serialized_history,
                 sources=sources,
             ).model_dump()
         )
@@ -500,6 +550,12 @@ def parse_args() -> argparse.Namespace:
         help="Directory for the persistent Chroma vector store.",
     )
     parser.add_argument(
+        "--log-dir",
+        type=Path,
+        default=Path("./storage/chat_logs"),
+        help="Directory to store chat transcripts as JSONL files.",
+    )
+    parser.add_argument(
         "--llm-model",
         default="gpt-4o-mini",
         help="OpenAI chat model identifier used for responses.",
@@ -555,6 +611,7 @@ def main() -> None:
     config = ServerConfig(
         storage_dir=args.storage_dir,
         chroma_dir=args.chroma_dir,
+        log_dir=args.log_dir,
         llm_model=args.llm_model,
         embed_model=args.embed_model,
         system_prompt=args.system_prompt,

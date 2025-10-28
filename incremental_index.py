@@ -100,18 +100,24 @@ def collect_existing_doc_ids(index: VectorStoreIndex) -> set[str]:
 
 def insert_new_documents(index: VectorStoreIndex, data_dir: Path) -> int:
     """Insert any documents that are not yet indexed. Returns count of new docs."""
-    reader = SimpleDirectoryReader(
-        input_dir=str(data_dir),
-        recursive=True,
-        filename_as_id=True,  # keeps doc_id stable across runs for incremental updates
-    )
-    docs = reader.load_data()
-    if not docs:
+    all_files = sorted(path for path in data_dir.rglob("*") if path.is_file())
+    if not all_files:
         raise ValueError(f"No documents found in {data_dir}")
 
     existing_ids = collect_existing_doc_ids(index)
-    new_docs = [doc for doc in docs if doc.doc_id not in existing_ids]
+    new_file_paths = [
+        path for path in all_files if str(path.resolve()) not in existing_ids
+    ]
 
+    if not new_file_paths:
+        return 0
+
+    # Load only the files we truly need to add instead of re-reading the entire corpus.
+    reader = SimpleDirectoryReader(
+        input_files=[str(path) for path in new_file_paths],
+        filename_as_id=True,  # keeps doc_id stable across runs for incremental updates
+    )
+    new_docs = reader.load_data()
     if not new_docs:
         return 0
 
