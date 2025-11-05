@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# (content identical to previous message; re-emitting to ensure file is written)
 
 from __future__ import annotations
 
@@ -84,7 +85,7 @@ def _build_index_from_files(data_dir: Path, persist_dir: Path, chroma_dir: Path)
     import chromadb
 
     docs: List[Document] = []
-    exts = {".txt", ".md", ".html"}
+    exts = {".txt", ".md", ".html", ".pdf", ".json"}
     if data_dir.exists():
         for p in data_dir.rglob("*"):
             if p.is_file() and p.suffix.lower() in exts:
@@ -123,7 +124,6 @@ def init_resources():
     try:
         INDEX = _load_existing_index(STORAGE_DIR, CHROMA_DIR)
         QUERY_ENGINE = _make_query_engine(INDEX, SIMILARITY_TOP_K)
-        log.info(CHROMA_DIR)
         log.info("Index and query engine initialized from existing Chroma store.")
     except Exception as e:
         INDEX = None
@@ -211,30 +211,41 @@ def search_index(query: str, top_k: Optional[int] = None) -> Dict[str, Any]:
     except Exception as e:
         return {"error": str(e), "matches": []}
 
+
 @mcp.tool(description="Ask a question; returns synthesized answer with sources (best-effort)")
 def ask(question: str, top_k: Optional[int] = None) -> Dict[str, Any]:
     global QUERY_ENGINE
     if not QUERY_ENGINE:
-        return {"answer": "", "sources": []}
+        return {"answer": "", "sources": [], "error": "QUERY_ENGINE not initialized"}
+
     try:
-        kwargs = {}
-        if top_k is not None:
-            kwargs["similarity_top_k"] = int(top_k)
-        resp = QUERY_ENGINE.query(question, **kwargs)
+        # Try modern call without kwargs first
+        if top_k is None:
+            resp = QUERY_ENGINE.query(question)
+        else:
+            try:
+                # Try legacy behavior
+                resp = QUERY_ENGINE.query(question, similarity_top_k=int(top_k))
+            except TypeError:
+                # Fallback: call without the kwarg
+                resp = QUERY_ENGINE.query(question)
+
         text = getattr(resp, "response", None) or str(resp)
-        source_nodes = getattr(resp, "source_nodes", [])
+        source_nodes = getattr(resp, "source_nodes", []) or []
         sources = []
-        for sn in source_nodes or []:
+        for sn in source_nodes:
             node = getattr(sn, "node", sn)
             sources.append({
                 "doc_id": getattr(node, "doc_id", None),
                 "score": getattr(sn, "score", None),
-                "text": getattr(node, "get_content", lambda: None)() or getattr(node, "text", None),
+                "text": (getattr(node, "get_content", lambda: None)() or
+                         getattr(node, "text", None)),
                 "metadata": getattr(node, "metadata", {}),
             })
         return {"answer": text, "sources": sources}
     except Exception as e:
         return {"answer": "", "sources": [], "error": str(e)}
+
 
 mcp_http = mcp.streamable_http_app()
 
